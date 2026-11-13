@@ -1,0 +1,105 @@
+import Phaser from 'phaser'
+import { SaveSystem } from '../systems/SaveSystem'
+
+export class MainMenuScene extends Phaser.Scene {
+  constructor() {
+    super('MainMenuScene')
+  }
+
+  create(): void {
+    const { width, height } = this.scale
+    const centerX = width / 2
+    const centerY = height / 2
+    const hasSave = SaveSystem.hasSave()
+
+    this.add.rectangle(centerX, centerY, width, height, 0x18241f)
+    this.add.rectangle(centerX, centerY - 5, 600, 390, 0x263a32)
+    this.add.rectangle(centerX, centerY - 5, 588, 378, 0x1d2c26)
+
+    this.add
+      .text(centerX, centerY - 155, 'ECHOES OF AETHER', {
+        color: '#f3d894',
+        fontFamily: 'Georgia, serif',
+        fontSize: '38px',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+
+    this.add
+      .text(centerX, centerY - 112, 'The Shattered Crystal', {
+        color: '#b8c5b7',
+        fontFamily: 'Georgia, serif',
+        fontSize: '18px',
+      })
+      .setOrigin(0.5)
+
+    this.createButton(centerX, centerY - 55, 'NEW GAME', () =>
+      this.scene.start('GameScene', { save: SaveSystem.fresh() }),
+    )
+    this.createButton(centerX, centerY + 3, 'CONTINUE', () => {
+      const save = SaveSystem.load()
+      if (save) this.scene.start('GameScene', { save })
+      else this.showNotice('No valid save found. Start a new game.')
+    }, !hasSave)
+    this.createButton(centerX, centerY + 61, 'SETTINGS: AUDIO', () => this.toggleAudioSetting())
+    this.createButton(centerX, centerY + 119, 'CREDITS', () => this.showCredits())
+
+    this.add
+      .text(centerX, centerY + 181, 'WASD / ARROWS: MOVE     SPACE: ATTACK     E: INTERACT', {
+        color: '#c4cec4',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '12px',
+      })
+      .setOrigin(0.5)
+
+    this.input.keyboard?.on('keydown-ENTER', () =>
+      this.scene.start('GameScene', { save: SaveSystem.fresh() }),
+    )
+  }
+
+  private createButton(x: number, y: number, label: string, action: () => void, disabled = false): void {
+    const button = this.add
+      .text(x, y, label, {
+        backgroundColor: disabled ? '#41483e' : '#7d6033',
+        color: disabled ? '#a4a69a' : '#fff1c8',
+        fontFamily: 'Georgia, serif',
+        fontSize: '18px',
+        fontStyle: 'bold',
+        padding: { x: 28, y: 9 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: !disabled })
+    if (!disabled) {
+      button.on('pointerover', () => button.setStyle({ backgroundColor: '#9a7741' }))
+      button.on('pointerout', () => button.setStyle({ backgroundColor: '#7d6033' }))
+      button.on('pointerdown', action)
+    }
+  }
+
+  private toggleAudioSetting(): void {
+    const saved = SaveSystem.load()
+    const muted = !(saved?.muted ?? SaveSystem.fresh().muted)
+    const settingsSaved = SaveSystem.setMuted(muted)
+    const progressSaved = saved ? SaveSystem.save({ ...saved, muted }) : true
+    this.showNotice(settingsSaved && progressSaved ? `Audio ${muted ? 'muted' : 'enabled'}.` : 'Unable to save audio settings.')
+  }
+
+  private showCredits(): void {
+    this.showNotice('Aetheria, its characters, pixel art and music are generated in-game for this project foundation.')
+  }
+
+  private showNotice(message: string): void {
+    const notice = this.add
+      .text(this.scale.width / 2, this.scale.height - 18, message, {
+        color: '#fff1c8',
+        backgroundColor: '#142019',
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '14px',
+        padding: { x: 12, y: 7 },
+        wordWrap: { width: 650 },
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(10)
+    this.time.delayedCall(2800, () => notice.destroy())
+  }
+}

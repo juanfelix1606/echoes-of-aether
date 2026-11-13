@@ -1,0 +1,57 @@
+:root {
+  font-family: Arial, sans-serif;
+  color: #e7e5d6;
+  background: #101914;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  background: radial-gradient(ellipse at center, #263a30 0%, #101914 75%);
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#app {
+  display: grid;
+  place-items: center;
+}
+
+#game {
+  width: min(100vw, 177.78vh);
+  height: min(100vh, 56.25vw);
+  overflow: hidden;
+}
+
+#game canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+@media (orientation: portrait) {
+  #game {
+    width: 100vw;
+    height: 56.25vw;
+  }
+}

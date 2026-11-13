@@ -1,0 +1,8 @@
+{
+  "appId": "com.echoesofaether.game",
+  "appName": "Echoes of Aether",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#101914"
+  }
+}
