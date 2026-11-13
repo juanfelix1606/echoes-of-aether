@@ -33,6 +33,14 @@ export class InventorySystem {
     return true
   }
 
+  unequip(slot: 'weapon' | 'armor'): boolean {
+    const item = this.save.equipment[slot]
+    if (!item) return false
+    this.add(item)
+    this.save.equipment[slot] = null
+    return true
+  }
+
   getAttackBonus(): number {
     const weapon = this.save.equipment.weapon
     return weapon ? ITEMS[weapon].power ?? 0 : 0

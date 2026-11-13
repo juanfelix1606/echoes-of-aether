@@ -2,7 +2,8 @@
 
 A Phaser 3 / TypeScript action RPG built with Vite. Explore Greenleaf Village,
 Whispering Forest and the Ancient Dungeon, and return the Aether fragment to
-Elder Rowan. Graphics and audio are procedural placeholders, not final assets.
+Elder Rowan. Characters, terrain, visual effects, and audio are generated
+locally at runtime; no downloaded art or sound assets are required.
 
 ## Requirements and running
 
@@ -23,8 +24,12 @@ follow the objective shown at the top of the screen.
 - Aether skill: Q or **SKILL**, costs mana.
 - Interact and advance dialogue: E, Enter, **TALK**, or **NEXT**.
 - Potion: P or **USE**. Opens a health potion if health is missing, otherwise an ether potion.
-- Inventory: I or **BAG**; select an item to use or equip it.
+- Inventory: I or **BAG**; select an item to use or equip it, or select an
+  equipped weapon or armor to unequip it.
+- Quest journal: **QUEST**.
 - Pause and audio: Escape or **PAUSE**.
+- Android Back opens/closes pause or dismisses the active panel; the game saves
+  when the app is backgrounded.
 - Save: F5 or interact with the village save point. The game also autosaves.
 
 Saved games and the audio setting are stored locally in the browser or Android
@@ -40,7 +45,7 @@ npm run preview
 
 ## Android
 
-Install Android Studio, a compatible JDK, and the Android SDK. Build the web
+Install Android Studio, JDK 21, and Android SDK platform 36. Build the web
 game and sync it to the included Capacitor Android project:
 
 ```powershell
@@ -55,6 +60,12 @@ directory. A release build requires an appropriately configured signing key.
 Re-run `npm run build:android` after web changes. No Android APK or device test
 has been verified in this environment.
 
+The GitHub Actions workflow in `.github/workflows/build-apk.yml` builds and
+uploads a debug APK on pushes, pull requests, and manual dispatch. The artifact
+is available from the workflow run after the job succeeds. It is not a signed
+release APK, and the workflow itself must run successfully before claiming an
+APK has been produced.
+
 ## Project layout
 
 - `src/config/`: Phaser configuration.
@@ -65,5 +76,7 @@ has been verified in this environment.
 - `android/`: Capacitor Android project.
 
 The current build is a playable work in progress, not a finished production
-release: artwork, animation, combat balancing, accessibility, device performance,
-and release signing still need further work and real-device QA.
+release. Among the original design goals still requiring work are complete
+directional character animations, richer collision-layer maps,
+full equipment/UI polish, accessibility,
+device performance testing, and release signing and QA.

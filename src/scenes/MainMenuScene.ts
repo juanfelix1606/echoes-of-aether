@@ -13,6 +13,16 @@ export class MainMenuScene extends Phaser.Scene {
     const hasSave = SaveSystem.hasSave()
 
     this.add.rectangle(centerX, centerY, width, height, 0x18241f)
+    const backdrop = this.add.graphics()
+    backdrop.fillStyle(0x263e34, 0.6)
+    for (let x = 25; x < width; x += 65) {
+      const heightOffset = (x * 7) % 70
+      backdrop.fillTriangle(x - 50, height, x, height - 90 - heightOffset, x + 50, height)
+    }
+    backdrop.fillStyle(0xc3b87c, 0.55)
+    for (let i = 0; i < 32; i += 1) {
+      backdrop.fillRect((i * 193 + 29) % width, (i * 71 + 28) % (height - 150), 2, 2)
+    }
     this.add.rectangle(centerX, centerY - 5, 600, 390, 0x263a32)
     this.add.rectangle(centerX, centerY - 5, 588, 378, 0x1d2c26)
 

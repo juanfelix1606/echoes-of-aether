@@ -1,4 +1,6 @@
 import Phaser from 'phaser'
+import { generateTextures } from '../assets/generateTextures'
+import { createTerrain } from '../data/terrain'
 import {
   ITEMS,
   ZONE_NAMES,
@@ -7,6 +9,7 @@ import {
   type ZoneId,
 } from '../data/gameData'
 import { AudioSystem } from '../systems/AudioSystem'
+import { rollDrops, type Drop } from '../systems/DropSystem'
 import { InventorySystem } from '../systems/InventorySystem'
 import { ProgressionSystem } from '../systems/ProgressionSystem'
 import { QuestSystem } from '../systems/QuestSystem'
@@ -20,13 +23,14 @@ interface EnemyDefinition {
   speed: number
   experience: number
   gold: number
+  drops: readonly Drop[]
 }
 
 const ENEMIES: Record<string, EnemyDefinition> = {
-  slime: { name: 'Corrupted Slime', texture: 'slime', health: 28, damage: 6, speed: 42, experience: 18, gold: 4 },
-  goblin: { name: 'Forest Goblin', texture: 'goblin', health: 48, damage: 10, speed: 58, experience: 30, gold: 8 },
-  skeleton: { name: 'Skeleton Warrior', texture: 'skeleton', health: 62, damage: 13, speed: 48, experience: 40, gold: 10 },
-  guardian: { name: 'Corrupted Guardian', texture: 'guardian', health: 300, damage: 20, speed: 38, experience: 180, gold: 100 },
+  slime: { name: 'Corrupted Slime', texture: 'slime', health: 28, damage: 6, speed: 42, experience: 18, gold: 4, drops: [{ item: 'health-potion', chance: 0.15 }] },
+  goblin: { name: 'Forest Goblin', texture: 'goblin', health: 48, damage: 10, speed: 58, experience: 30, gold: 8, drops: [{ item: 'health-potion', chance: 0.25 }] },
+  skeleton: { name: 'Skeleton Warrior', texture: 'skeleton', health: 62, damage: 13, speed: 48, experience: 40, gold: 10, drops: [{ item: 'ether-potion', chance: 0.25 }] },
+  guardian: { name: 'Corrupted Guardian', texture: 'guardian', health: 300, damage: 20, speed: 38, experience: 180, gold: 100, drops: [] },
 }
 
 interface MovementKeys {
@@ -50,15 +54,20 @@ export class GameScene extends Phaser.Scene {
   private zoneObjects: Phaser.GameObjects.GameObject[] = []
   private obstacles!: Phaser.Physics.Arcade.StaticGroup
   private obstacleCollider?: Phaser.Physics.Arcade.Collider
+  private enemyColliders: Phaser.Physics.Arcade.Collider[] = []
+  private terrainMap?: Phaser.Tilemaps.Tilemap
   private hud!: Phaser.GameObjects.Container
   private healthBar!: Phaser.GameObjects.Graphics
   private manaBar!: Phaser.GameObjects.Graphics
+  private experienceBar!: Phaser.GameObjects.Graphics
+  private joystickKnob!: Phaser.GameObjects.Arc
   private hudText!: Phaser.GameObjects.Text
   private objectiveText!: Phaser.GameObjects.Text
   private toastText!: Phaser.GameObjects.Text
   private dialoguePanel?: Phaser.GameObjects.Container
   private inventoryPanel?: Phaser.GameObjects.Container
   private pausedPanel?: Phaser.GameObjects.Container
+  private endPanel?: Phaser.GameObjects.Container
   private attackAt = 0
   private skillAt = 0
   private interactionAt = 0
@@ -75,6 +84,7 @@ export class GameScene extends Phaser.Scene {
   private dialogText?: Phaser.GameObjects.Text
   private dialogLines: string[] = []
   private dialogIndex = 0
+  private dialogueComplete?: () => void
   private paused = false
   private nextAutosave = 0
   private worldWidth = 1200
@@ -84,11 +94,21 @@ export class GameScene extends Phaser.Scene {
     super('GameScene')
   }
 
+  handleBack(): void {
+    this.togglePause()
+  }
+
+  saveOnBackground(): void {
+    if (this.player?.active && this.saveData.player.health > 0) this.saveGame(false)
+  }
+
   init(data: { save?: SaveData }): void {
     this.paused = false
     this.dialoguePanel = undefined
+    this.dialogueComplete = undefined
     this.inventoryPanel = undefined
     this.pausedPanel = undefined
+    this.endPanel = undefined
     this.joystickPointer = -1
     this.joystickVector.set(0, 0)
     this.attackAt = 0
@@ -106,7 +126,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.createTextures()
+    generateTextures(this)
     this.physics.world.setBounds(32, 32, this.worldWidth - 64, this.worldHeight - 64)
     this.obstacles = this.physics.add.staticGroup()
     this.player = this.physics.add.sprite(this.saveData.x, this.saveData.y, 'hero')
@@ -172,11 +192,14 @@ export class GameScene extends Phaser.Scene {
       this.facing.copy(movement).normalize()
       this.player.setVelocity(movement.x * 175, movement.y * 175)
       this.player.setFlipX(movement.x < 0)
+      this.player.setAngle(Math.sin(time / 95) * 3)
     } else {
       this.player.setVelocity(0, 0)
+      this.player.setAngle(0)
     }
     this.player.setDepth(this.player.y)
     this.updateEnemies(time, delta)
+    if (this.paused) return
 
     if (Phaser.Input.Keyboard.JustDown(this.actionKeys.attack) || this.touchAttack) this.basicAttack(time)
     if (Phaser.Input.Keyboard.JustDown(this.actionKeys.skill) || this.touchSkill) this.useSkill(time)
@@ -207,7 +230,8 @@ export class GameScene extends Phaser.Scene {
     this.hud.add(this.add.rectangle(330, 43, 620, 70, 0x111b17, 0.9))
     this.healthBar = this.add.graphics()
     this.manaBar = this.add.graphics()
-    this.hud.add([this.healthBar, this.manaBar])
+    this.experienceBar = this.add.graphics()
+    this.hud.add([this.healthBar, this.manaBar, this.experienceBar])
     this.hudText = this.add.text(28, 12, '', { color: '#f1ead5', fontSize: '12px', fontFamily: 'Arial' })
     this.objectiveText = this.add.text(28, 76, '', {
       color: '#f0d894',
@@ -227,6 +251,12 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2200).setVisible(false)
     this.hud.add([this.hudText, this.objectiveText])
     this.createTouchControls()
+    const journal = this.add.text(650, 18, 'QUEST', {
+      color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 12, y: 10 },
+    }).setScrollFactor(0).setInteractive({ useHandCursor: true })
+    this.onUiPointerDown(journal, () => {
+      if (!this.paused && !this.dialoguePanel) this.showDialogue([this.quest.getObjective()], 'The Shattered Crystal')
+    })
     const inventory = this.add.text(750, 18, 'BAG', {
       color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 14, y: 10 },
     }).setScrollFactor(0).setInteractive({ useHandCursor: true })
@@ -235,14 +265,14 @@ export class GameScene extends Phaser.Scene {
       color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 14, y: 10 },
     }).setScrollFactor(0).setInteractive({ useHandCursor: true })
     this.onUiPointerDown(pause, () => this.togglePause())
-    this.hud.add([inventory, pause])
+    this.hud.add([journal, inventory, pause])
     this.refreshHud()
   }
 
   private createTouchControls(): void {
     const joystickBase = this.add.circle(100, 431, 51, 0x111b17, 0.42)
       .setStrokeStyle(3, 0xe9d596, 0.55).setScrollFactor(0).setDepth(2001)
-    const joystickKnob = this.add.circle(100, 431, 22, 0xddd0a4, 0.52)
+    this.joystickKnob = this.add.circle(100, 431, 22, 0xddd0a4, 0.52)
       .setScrollFactor(0).setDepth(2002)
     const buttonSpecs = [
       { x: 856, y: 438, label: 'ATK', action: 'attack' },
@@ -251,8 +281,7 @@ export class GameScene extends Phaser.Scene {
       { x: 868, y: 346, label: 'SKILL', action: 'skill' },
     ] as const
     const joystickRing = joystickBase
-    this.hud.add([joystickRing, joystickKnob])
-    joystickKnob.setData('joystick', true)
+    this.hud.add([joystickRing, this.joystickKnob])
     for (const spec of buttonSpecs) {
       const circle = this.add.circle(spec.x, spec.y, 37, 0x7d6033, 0.72)
         .setStrokeStyle(3, 0xf3d894, 0.8).setScrollFactor(0).setDepth(2001)
@@ -273,8 +302,11 @@ export class GameScene extends Phaser.Scene {
       this.physics.world.removeCollider(this.obstacleCollider)
       this.obstacleCollider = undefined
     }
+    this.enemyColliders.forEach((collider) => this.physics.world.removeCollider(collider))
+    this.enemyColliders = []
     this.zoneObjects.forEach((object) => object.destroy())
     this.zoneObjects = []
+    this.terrainMap?.destroy()
     this.enemies.forEach((enemy) => enemy.destroy())
     this.enemies = []
     this.obstacles.clear(true, true)
@@ -283,13 +315,7 @@ export class GameScene extends Phaser.Scene {
     this.saveData.x = this.player.x
     this.saveData.y = this.player.y
 
-    const floorColors: Record<ZoneId, number> = {
-      village: 0x557c58,
-      forest: 0x355744,
-      dungeon: 0x373944,
-    }
-    this.track(this.add.rectangle(this.worldWidth / 2, this.worldHeight / 2, this.worldWidth, this.worldHeight, floorColors[zone]).setDepth(-1000))
-    this.drawFloorDetails(zone)
+    this.terrainMap = createTerrain(this, zone, this.worldWidth, this.worldHeight)
     this.player.setVelocity(0, 0)
     this.player.setDepth(this.player.y)
     this.obstacleCollider = this.physics.add.collider(this.player, this.obstacles)
@@ -299,20 +325,6 @@ export class GameScene extends Phaser.Scene {
     if (zone === 'dungeon') this.buildDungeon()
     this.addZoneHeader(ZONE_NAMES[zone])
     this.refreshHud()
-  }
-
-  private drawFloorDetails(zone: ZoneId): void {
-    const graphics = this.add.graphics().setDepth(-999)
-    graphics.lineStyle(1, zone === 'dungeon' ? 0x595c68 : 0x91a480, 0.18)
-    for (let x = 0; x <= this.worldWidth; x += 48) graphics.lineBetween(x, 0, x, this.worldHeight)
-    for (let y = 0; y <= this.worldHeight; y += 48) graphics.lineBetween(0, y, this.worldWidth, y)
-    graphics.fillStyle(zone === 'dungeon' ? 0x72717a : 0xb0a579, 0.2)
-    for (let i = 0; i < 80; i += 1) {
-      const x = Phaser.Math.Between(45, this.worldWidth - 45)
-      const y = Phaser.Math.Between(45, this.worldHeight - 45)
-      graphics.fillRect(x, y, 3, 3)
-    }
-    this.track(graphics)
   }
 
   private buildVillage(): void {
@@ -362,6 +374,16 @@ export class GameScene extends Phaser.Scene {
     const body = this.track(this.add.rectangle(x, y, 170, 110, 0x584638).setStrokeStyle(4, 0xb9965a))
     this.track(this.add.triangle(x, y - 70, -100, 60, 0, -20, 100, 60, 0x793f38).setStrokeStyle(4, 0xb9965a))
     body.setDepth(y)
+    const details = this.add.graphics().setDepth(y + 1)
+    details.fillStyle(0x302a27).fillRect(x - 15, y + 9, 30, 45)
+    details.fillStyle(0x845d3c).fillRect(x - 12, y + 12, 24, 42)
+    details.fillStyle(0xd0a75c).fillRect(x + 5, y + 33, 3, 3)
+    for (const windowX of [x - 55, x + 36]) {
+      details.fillStyle(0x302a27).fillRect(windowX, y - 26, 22, 24)
+      details.fillStyle(0xe4c882).fillRect(windowX + 3, y - 23, 16, 18)
+      details.fillStyle(0x765540).fillRect(windowX + 10, y - 23, 2, 18).fillRect(windowX + 3, y - 15, 16, 2)
+    }
+    this.track(details)
     this.track(this.add.text(x, y + 42, title, { color: '#f4d795', fontSize: '13px', fontStyle: 'bold' }).setOrigin(0.5).setDepth(y + 1))
   }
 
@@ -371,7 +393,7 @@ export class GameScene extends Phaser.Scene {
     if (blocking) {
       const blocker = this.obstacles.create(x, y + 15, 'tree')
       blocker.setVisible(false)
-      blocker.setSize(25, 16).setOffset(4, 22).refreshBody()
+      blocker.setSize(25, 16).setOffset(12, 20).refreshBody()
     }
   }
 
@@ -425,8 +447,12 @@ export class GameScene extends Phaser.Scene {
     enemy.setData('warning', false)
     enemy.setData('warningAt', 0)
     enemy.setData('phaseTwo', false)
+    enemy.setData('nextPattern', 'bolt')
+    enemy.setData('originX', x)
+    enemy.setData('originY', y)
     enemy.setData('healthBar', this.track(this.add.graphics().setDepth(y + 1)))
     this.enemies.push(enemy)
+    this.enemyColliders.push(this.physics.add.collider(enemy, this.obstacles))
   }
 
   private createShard(x: number, y: number): void {
@@ -452,6 +478,10 @@ export class GameScene extends Phaser.Scene {
       const definition = ENEMIES[kind]
       const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.x, enemy.y)
       const boss = kind === 'guardian'
+      if (boss && distance < 510 && !enemy.getData('musicStarted')) {
+        enemy.setData('musicStarted', true)
+        this.audio.setZone('boss')
+      }
       const phaseTwo = boss && Number(enemy.getData('health')) <= 150
       const healthBar = enemy.getData('healthBar') as Phaser.GameObjects.Graphics
       healthBar.clear()
@@ -464,11 +494,35 @@ export class GameScene extends Phaser.Scene {
         this.showToast('The Guardian enters its enraged phase!')
       }
 
-      if (boss && enemy.getData('warning') && time >= Number(enemy.getData('warningAt'))) {
-        enemy.setData('warning', false)
-        if (Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.x, enemy.y) < 112) {
-          this.damagePlayer(definition.damage, enemy)
+      if (boss && enemy.getData('warning')) {
+        enemy.setVelocity(0, 0)
+        if (time >= Number(enemy.getData('warningAt'))) {
+          enemy.setData('warning', false)
+          const x = Number(enemy.getData('warningX'))
+          const y = Number(enemy.getData('warningY'))
+          const radius = Number(enemy.getData('warningRadius'))
+          if (Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y) < radius) {
+            this.damagePlayer(definition.damage, enemy)
+          }
         }
+      } else if (boss && distance < 380 && time >= Number(enemy.getData('attackAt')) &&
+        (distance <= 90 || enemy.getData('nextPattern') === 'bolt')) {
+        const bolt = enemy.getData('nextPattern') === 'bolt'
+        const x = bolt ? this.player.x : enemy.x
+        const y = bolt ? this.player.y : enemy.y
+        const radius = bolt ? 55 : 112
+        const delay = phaseTwo ? 500 : 750
+        enemy.setVelocity(0, 0)
+        enemy.setData('warning', true)
+        enemy.setData('warningAt', time + delay)
+        enemy.setData('warningX', x)
+        enemy.setData('warningY', y)
+        enemy.setData('warningRadius', radius)
+        enemy.setData('nextPattern', bolt ? 'slam' : 'bolt')
+        enemy.setData('attackAt', time + (phaseTwo ? 1600 : 2200))
+        this.showToast(bolt ? 'The Guardian marks your position!' : 'The Guardian prepares a shockwave!')
+        const warning = this.add.circle(x, y, radius, 0xd35454, 0.2).setStrokeStyle(3, 0xe88772).setDepth(1500)
+        this.tweens.add({ targets: warning, alpha: 0.8, duration: delay, onComplete: () => warning.destroy() })
       } else if (distance < (boss ? 510 : 260)) {
         if (distance > (boss ? 90 : 37)) {
           const direction = new Phaser.Math.Vector2(this.player.x - enemy.x, this.player.y - enemy.y).normalize()
@@ -478,20 +532,19 @@ export class GameScene extends Phaser.Scene {
         } else {
           enemy.setVelocity(0, 0)
           if (time >= Number(enemy.getData('attackAt'))) {
-            enemy.setData('attackAt', time + (boss ? (phaseTwo ? 1450 : 2100) : 1250))
-            if (boss) {
-              enemy.setData('warning', true)
-              enemy.setData('warningAt', time + (phaseTwo ? 420 : 600))
-              this.showToast('The Guardian is preparing a strike!')
-              const warning = this.add.circle(enemy.x, enemy.y, 68, 0xd35454, 0.2).setStrokeStyle(3, 0xe88772).setDepth(1500)
-              this.tweens.add({ targets: warning, alpha: 0.8, scale: phaseTwo ? 1.8 : 1.5, duration: phaseTwo ? 420 : 600, onComplete: () => warning.destroy() })
-            } else {
+            if (!boss) {
+              enemy.setData('attackAt', time + 1250)
               this.damagePlayer(definition.damage, enemy)
             }
           }
         }
       } else {
-        enemy.setVelocity(0, 0)
+        const originX = Number(enemy.getData('originX'))
+        const targetX = originX + Math.sin(time / 1600 + originX) * 28
+        const originY = Number(enemy.getData('originY'))
+        const targetY = originY + Math.cos(time / 2100 + originY) * 18
+        if (boss) enemy.setVelocity(0, 0)
+        else enemy.setVelocity(Phaser.Math.Clamp(targetX - enemy.x, -20, 20), Phaser.Math.Clamp(targetY - enemy.y, -20, 20))
       }
       enemy.setDepth(enemy.y)
     }
@@ -541,10 +594,13 @@ export class GameScene extends Phaser.Scene {
     const kind = enemy.getData('kind') as string
     const definition = ENEMIES[kind]
     const isGuardian = kind === 'guardian'
+    this.burst(enemy.x, enemy.y, isGuardian ? 0xb9a4f0 : 0xe7d59b, isGuardian ? 22 : 10)
     ;(enemy.getData('healthBar') as Phaser.GameObjects.Graphics | undefined)?.destroy()
     enemy.disableBody(true, true)
     this.enemies = this.enemies.filter((entry) => entry.active)
     this.saveData.player.gold += definition.gold
+    const drops = rollDrops(definition.drops)
+    drops.forEach((item) => this.inventory.add(item))
     const levels = ProgressionSystem.awardExperience(this.saveData.player, definition.experience)
     if (this.saveData.zone === 'forest' && !isGuardian) {
       this.saveData.quest.forestKills = Math.min(4, this.saveData.quest.forestKills + 1)
@@ -557,13 +613,18 @@ export class GameScene extends Phaser.Scene {
       }
     }
     if (isGuardian) {
+      this.audio.setZone('dungeon')
       this.saveData.quest.guardianDefeated = true
       this.createShard(enemy.x, enemy.y)
       this.showToast('The Guardian falls. Recover the shard!')
     } else {
-      this.showToast(`${definition.name} defeated! +${definition.experience} EXP`)
+      const loot = drops.length ? ` • Found ${drops.map((item) => ITEMS[item].name).join(', ')}` : ''
+      this.showToast(`${definition.name} defeated! +${definition.experience} EXP${loot}`)
     }
-    if (levels) this.showToast(`Level up! You reached level ${this.saveData.player.level}.`)
+    if (levels) {
+      this.burst(this.player.x, this.player.y, 0xffdc83, 16)
+      this.showToast(`Level up! You reached level ${this.saveData.player.level}.`)
+    }
     this.audio.playTone(isGuardian ? 150 : 390, 0.28, 'triangle')
     this.refreshHud()
     this.saveGame(false)
@@ -648,7 +709,12 @@ export class GameScene extends Phaser.Scene {
       this.saveData.quest.returnedToElder = true
       this.saveData.player.gold += 100
       const levels = ProgressionSystem.awardExperience(this.saveData.player, 120)
-      this.showDialogue(['Elder Rowan: You have returned with the shard! Take this reward.'], 'Quest complete! +100 gold, +120 EXP')
+      this.showDialogue(
+        ['Elder Rowan: You have returned with the shard! Its light will help us heal Aetheria.'],
+        'Quest complete! +100 gold, +120 EXP',
+        undefined,
+        () => this.showVictory(),
+      )
       if (levels) this.showToast(`Level up! You reached level ${this.saveData.player.level}.`)
       this.refreshHud()
       this.saveGame(false)
@@ -710,12 +776,13 @@ export class GameScene extends Phaser.Scene {
     this.saveGame(false)
   }
 
-  private showDialogue(lines: string[], title: string, choices?: Array<[string, () => void]>): void {
+  private showDialogue(lines: string[], title: string, choices?: Array<[string, () => void]>, onComplete?: () => void): void {
     this.closeDialogue()
     this.player.setVelocity(0, 0)
     this.physics.world.pause()
     this.dialogLines = lines
     this.dialogIndex = 0
+    this.dialogueComplete = onComplete
     const panel = this.add.container(480, 420).setScrollFactor(0).setDepth(2300)
     this.dialoguePanel = panel
     panel.add(this.add.rectangle(0, 0, 780, choices ? 206 : 142, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
@@ -761,8 +828,10 @@ export class GameScene extends Phaser.Scene {
     if (!this.dialoguePanel) return
     this.dialogIndex += 1
     if (this.dialogIndex >= this.dialogLines.length) {
+      const onComplete = this.dialogueComplete
       this.closeDialogue()
       this.refreshHud()
+      onComplete?.()
       return
     }
     this.dialogText?.setText(this.dialogLines[this.dialogIndex])
@@ -772,6 +841,7 @@ export class GameScene extends Phaser.Scene {
     this.dialoguePanel?.destroy()
     this.dialoguePanel = undefined
     this.dialogText = undefined
+    this.dialogueComplete = undefined
     if (!this.paused) this.physics.world.resume()
   }
 
@@ -793,6 +863,22 @@ export class GameScene extends Phaser.Scene {
     panel.add(this.add.rectangle(0, 0, 700, 420, 0x111b17, 0.98).setStrokeStyle(3, 0xb9965a))
     panel.add(this.add.text(-320, -185, 'INVENTORY & CHARACTER', { color: '#f3d894', fontSize: '22px', fontStyle: 'bold' }))
     panel.add(this.add.text(-320, -150, `Level ${this.saveData.player.level}   ATK ${this.saveData.player.attack + this.inventory.getAttackBonus()}   DEF ${this.saveData.player.defense + this.inventory.getDefenseBonus()}   Gold ${this.saveData.player.gold}`, { color: '#eee8d7', fontSize: '15px' }))
+    const equipped = (['weapon', 'armor'] as const)
+    equipped.forEach((slot, index) => {
+      const id = this.saveData.equipment[slot]
+      const label = this.add.text(-315 + index * 320, 112, `${slot.toUpperCase()}: ${id ? ITEMS[id].name : 'None'}`, {
+        color: '#f3d894', backgroundColor: '#293b31', fontSize: '14px', padding: { x: 8, y: 8 },
+      }).setScrollFactor(0).setInteractive({ useHandCursor: true })
+      this.onUiPointerDown(label, () => {
+        if (id && this.inventory.unequip(slot)) {
+          this.showToast(`${ITEMS[id].name} unequipped.`)
+          this.refreshHud()
+          this.toggleInventory()
+          this.toggleInventory()
+        }
+      })
+      panel.add(label)
+    })
     const slots = Object.entries(this.saveData.inventory) as Array<[ItemId, number]>
     if (!slots.length) panel.add(this.add.text(-315, -100, 'Your pack is empty.', { color: '#c4cec4', fontSize: '16px' }))
     slots.forEach(([id, count], index) => {
@@ -826,6 +912,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private togglePause(): void {
+    if (this.endPanel) return
     if (this.dialoguePanel) {
       this.advanceDialogue()
       return
@@ -863,6 +950,7 @@ export class GameScene extends Phaser.Scene {
     this.paused = true
     this.physics.world.pause()
     const panel = this.add.container(480, 270).setScrollFactor(0).setDepth(2600)
+    this.endPanel = panel
     panel.add(this.add.rectangle(0, 0, 400, 220, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
     panel.add(this.add.text(0, -65, 'YOU HAVE FALLEN', { color: '#e99b83', fontSize: '24px', fontStyle: 'bold' }).setOrigin(0.5))
     const revive = this.add.text(0, 6, 'RISE AGAIN', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '17px', padding: { x: 18, y: 9 } }).setOrigin(0.5).setScrollFactor(0).setInteractive()
@@ -875,6 +963,30 @@ export class GameScene extends Phaser.Scene {
     })
     panel.add(revive)
     panel.add(this.add.text(0, 70, 'Your progress is safe. Return to the village.', { color: '#ddd6c5', fontSize: '14px' }).setOrigin(0.5))
+  }
+
+  private showVictory(): void {
+    this.paused = true
+    this.physics.world.pause()
+    const panel = this.add.container(480, 270).setScrollFactor(0).setDepth(2600)
+    this.endPanel = panel
+    panel.add(this.add.rectangle(0, 0, 560, 260, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
+    panel.add(this.add.text(0, -88, 'THE SHATTERED CRYSTAL', {
+      color: '#f3d894', fontFamily: 'Georgia', fontSize: '24px', fontStyle: 'bold',
+    }).setOrigin(0.5))
+    panel.add(this.add.text(0, -35, 'The first echo is restored. Aetheria has hope again.', {
+      color: '#e5e9d8', fontSize: '16px',
+    }).setOrigin(0.5))
+    const resume = this.add.text(0, 48, 'CONTINUE EXPLORING', {
+      color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 18, y: 10 },
+    }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true })
+    this.onUiPointerDown(resume, () => {
+      panel.destroy()
+      this.endPanel = undefined
+      this.paused = false
+      this.physics.world.resume()
+    })
+    panel.add(resume)
   }
 
   private usePotion(): void {
@@ -901,7 +1013,7 @@ export class GameScene extends Phaser.Scene {
   private refreshHud(): void {
     const player = this.saveData.player
     const xpNext = ProgressionSystem.experienceToNext(player.level)
-    this.hudText.setText(`LV ${player.level}   HP ${player.health}/${player.maxHealth}   MP ${player.mana}/${player.maxMana}   EXP ${player.experience}/${xpNext}   GOLD ${player.gold}`)
+    this.hudText.setText(`LV ${player.level}   HP ${player.health}/${player.maxHealth}   MP ${player.mana}/${player.maxMana}   EXP ${player.experience}/${xpNext}   GOLD ${player.gold}   POTIONS ${this.inventory.count('health-potion')}`)
     this.objectiveText.setText(`THE SHATTERED CRYSTAL  •  ${this.quest.getObjective()}`)
     this.refreshBars()
   }
@@ -914,6 +1026,11 @@ export class GameScene extends Phaser.Scene {
     this.manaBar.clear()
     this.manaBar.fillStyle(0x222938, 1).fillRoundedRect(28, 64, 310, 7, 3)
     this.manaBar.fillStyle(0x648bd0, 1).fillRoundedRect(28, 64, 310 * this.saveData.player.mana / this.saveData.player.maxMana, 7, 3)
+    this.experienceBar.clear()
+    this.experienceBar.fillStyle(0x3e3722, 1).fillRoundedRect(345, 51, 230, 9, 4)
+    this.experienceBar.fillStyle(0xd0af59, 1).fillRoundedRect(
+      345, 51, 230 * this.saveData.player.experience / ProgressionSystem.experienceToNext(this.saveData.player.level), 9, 4,
+    )
   }
 
   private showToast(message: string): void {
@@ -953,6 +1070,7 @@ export class GameScene extends Phaser.Scene {
     if (pointer.id === this.joystickPointer) {
       this.joystickPointer = -1
       this.joystickVector.set(0, 0)
+      this.joystickKnob.setPosition(100, 431)
     }
   }
 
@@ -960,6 +1078,20 @@ export class GameScene extends Phaser.Scene {
     const delta = new Phaser.Math.Vector2(pointer.x - this.joystickOrigin.x, pointer.y - this.joystickOrigin.y)
     if (delta.length() > 46) delta.setLength(46)
     this.joystickVector.copy(delta).scale(1 / 46)
+    this.joystickKnob.setPosition(100 + delta.x, 431 + delta.y)
+  }
+
+  private burst(x: number, y: number, tint: number, quantity: number): void {
+    const particles = this.add.particles(x, y, 'spark', {
+      speed: { min: 30, max: 120 },
+      lifespan: 500,
+      scale: { start: 1.5, end: 0 },
+      alpha: { start: 1, end: 0 },
+      tint,
+      emitting: false,
+    }).setDepth(1500)
+    particles.explode(quantity)
+    this.time.delayedCall(600, () => particles.destroy())
   }
 
   private onShutdown(): void {
@@ -971,6 +1103,8 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.off('keydown-ENTER', this.advanceDialogue, this)
     this.input.keyboard?.off('keydown-I', this.toggleInventory, this)
     this.audio.dispose()
+    this.terrainMap?.destroy()
+    this.terrainMap = undefined
   }
 
   private track<T extends Phaser.GameObjects.GameObject>(object: T): T {
@@ -978,52 +1112,4 @@ export class GameScene extends Phaser.Scene {
     return object
   }
 
-  private createTextures(): void {
-    if (this.textures.exists('hero')) return
-    const hero = this.make.graphics({ x: 0, y: 0 })
-    hero.fillStyle(0x2d233b).fillRect(4, 2, 12, 4)
-    hero.fillStyle(0xe0b68a).fillRect(5, 6, 10, 7)
-    hero.fillStyle(0x754f82).fillRect(3, 13, 14, 8)
-    hero.fillStyle(0x302a39).fillRect(4, 21, 5, 3).fillRect(11, 21, 5, 3)
-    hero.fillStyle(0x302a39).fillRect(7, 8, 2, 2).fillRect(12, 8, 2, 2)
-    hero.generateTexture('hero', 20, 26)
-    hero.destroy()
-
-    this.createCreatureTexture('slime', 26, 22, 0x62be78, 0x183d33)
-    this.createCreatureTexture('goblin', 22, 31, 0x7d994d, 0x334029)
-    this.createCreatureTexture('skeleton', 24, 34, 0xc7c3ae, 0x3c3a45)
-    this.createCreatureTexture('guardian', 52, 62, 0x655b84, 0x261e39)
-
-    const elder = this.make.graphics({ x: 0, y: 0 })
-    elder.fillStyle(0xebe0c2).fillRect(6, 1, 12, 10)
-    elder.fillStyle(0xe0b68a).fillRect(7, 7, 10, 9)
-    elder.fillStyle(0x7681a2).fillRect(3, 16, 18, 14)
-    elder.fillStyle(0xf3d894).fillRect(5, 0, 14, 4)
-    elder.generateTexture('elder', 24, 32)
-    elder.destroy()
-    const merchant = this.make.graphics({ x: 0, y: 0 })
-    merchant.fillStyle(0xd2a370).fillRect(5, 5, 14, 11)
-    merchant.fillStyle(0xb34e4c).fillRect(3, 16, 18, 14)
-    merchant.fillStyle(0xe4c56f).fillRect(4, 1, 16, 5)
-    merchant.generateTexture('merchant', 24, 32)
-    merchant.destroy()
-
-    const tree = this.make.graphics({ x: 0, y: 0 })
-    tree.fillStyle(0x533d2c).fillRect(12, 23, 8, 17)
-    tree.fillStyle(0x244431).fillRect(3, 12, 26, 17)
-    tree.fillStyle(0x356344).fillRect(7, 5, 19, 20)
-    tree.fillStyle(0x4c7a4c).fillRect(12, 2, 9, 11)
-    tree.generateTexture('tree', 32, 40)
-    tree.destroy()
-  }
-
-  private createCreatureTexture(key: string, width: number, height: number, mainColor: number, darkColor: number): void {
-    const graphics = this.make.graphics({ x: 0, y: 0 })
-    graphics.fillStyle(darkColor).fillRect(2, Math.floor(height * 0.35), width - 4, height * 0.58)
-    graphics.fillStyle(mainColor).fillRect(4, Math.floor(height * 0.2), width - 8, height * 0.63)
-    graphics.fillStyle(0xf1e8c5).fillRect(Math.floor(width * 0.33), Math.floor(height * 0.4), 3, 4)
-    graphics.fillStyle(0xf1e8c5).fillRect(Math.floor(width * 0.63), Math.floor(height * 0.4), 3, 4)
-    graphics.generateTexture(key, width, height)
-    graphics.destroy()
-  }
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NEW_GAME } from '../src/data/gameData'
 import { InventorySystem } from '../src/systems/InventorySystem'
+import { rollDrops } from '../src/systems/DropSystem'
 import { ProgressionSystem } from '../src/systems/ProgressionSystem'
 import { QuestSystem } from '../src/systems/QuestSystem'
 import { SaveSystem } from '../src/systems/SaveSystem'
@@ -51,6 +52,15 @@ describe('saved games', () => {
 })
 
 describe('progression and inventory', () => {
+  it('awards only drops whose chance passes the roll', () => {
+    const table = [
+      { item: 'health-potion' as const, chance: 0.25 },
+      { item: 'ether-potion' as const, chance: 0.5 },
+    ]
+    expect(rollDrops(table, () => 0.25)).toEqual(['ether-potion'])
+    expect(rollDrops(table, () => 0.9)).toEqual([])
+  })
+
   it('levels up at the threshold and carries excess experience', () => {
     const player = structuredClone(NEW_GAME.player)
     player.health = 1
@@ -80,6 +90,10 @@ describe('progression and inventory', () => {
     expect(inventory.equip('iron-sword')).toBe(true)
     expect(inventory.getAttackBonus()).toBe(4)
     expect(inventory.count('iron-sword')).toBe(1)
+    expect(inventory.unequip('weapon')).toBe(true)
+    expect(inventory.getAttackBonus()).toBe(0)
+    expect(inventory.count('iron-sword')).toBe(2)
+    expect(inventory.unequip('weapon')).toBe(false)
   })
 })
 
