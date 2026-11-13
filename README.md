@@ -81,8 +81,8 @@ $env:AETHER_KEY_PASSWORD = '<key password>'
 
 Set all four variables or none. Without them the release output is unsigned;
 do not commit keys or passwords. Provision and protect your own signing key.
-Re-run `npm run build:android` after web changes. No Android APK or device test
-has been verified in this environment.
+Re-run `npm run build:android` after web changes. A debug APK has been built
+by GitHub Actions, but it has not been tested on an Android device.
 
 The GitHub Actions workflow in `.github/workflows/build-apk.yml` builds and
 uploads a debug APK on pushes, pull requests, and manual dispatch. The artifact
