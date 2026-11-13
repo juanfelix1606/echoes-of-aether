@@ -95,7 +95,23 @@ const art: Record<string, PixelArt> = {
 }
 
 export function generateTextures(scene: Phaser.Scene): void {
-  for (const [key, { rows, colors, scale }] of Object.entries(art)) {
+  const hero = art.hero
+  const side = [...hero.rows]
+  side.splice(3, 5, '...ohssssssho...', '...ohsssossho...', '...ohssssssso...', '....ohssssso....', '.....offffo.....')
+  const back = [...hero.rows]
+  back.splice(3, 5, '...ohhhHHhhho...', '...ohhHHhhhho...', '...ohhhhhhhho...', '....ohhhhho.....', '.....ooooo......')
+  const heroFrames: Record<string, PixelArt> = {}
+  for (const [direction, rows] of Object.entries({ down: hero.rows, side, up: back })) {
+    heroFrames[`hero-${direction}-idle`] = { ...hero, rows }
+    for (let frame = 0; frame < 2; frame += 1) {
+      const walking = [...rows]
+      walking.splice(15, 4, ...(frame === 0
+        ? ['...obbo..bbo....', '...obbo..bbo....', '...owwo..bbo....', '...oooo..oooo...']
+        : ['....obbo..bbo...', '....obbo..bbo...', '....obbo..wwo...', '....oooo..oooo..']))
+      heroFrames[`hero-${direction}-walk-${frame}`] = { ...hero, rows: walking }
+    }
+  }
+  for (const [key, { rows, colors, scale }] of Object.entries({ ...art, ...heroFrames })) {
     if (scene.textures.exists(key)) continue
     const graphics = scene.make.graphics({ x: 0, y: 0 })
     for (let y = 0; y < rows.length; y += 1) {

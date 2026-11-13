@@ -7,7 +7,16 @@ const palettes: Record<ZoneId, [number, number, number]> = {
   dungeon: [0x373a49, 0x4c5060, 0x282b38],
 }
 
-export function createTerrain(scene: Phaser.Scene, zone: ZoneId, width: number, height: number): Phaser.Tilemaps.Tilemap {
+export function getBlockingTiles(zone: ZoneId): Array<[number, number]> {
+  if (zone === 'village') return [[5, 9], [5, 10], [30, 9], [30, 10]]
+  if (zone === 'forest') return [[11, 5], [12, 5], [11, 6], [22, 14], [23, 14], [23, 15]]
+  return [6, 7, 8, 13, 14, 15].flatMap((y): Array<[number, number]> => [[21, y], [22, y]])
+}
+
+export function createTerrain(scene: Phaser.Scene, zone: ZoneId, width: number, height: number): {
+  map: Phaser.Tilemaps.Tilemap
+  blocking: Phaser.Tilemaps.TilemapLayer
+} {
   const key = `terrain-${zone}`
   if (!scene.textures.exists(key)) {
     const graphics = scene.make.graphics({ x: 0, y: 0 })
@@ -29,7 +38,11 @@ export function createTerrain(scene: Phaser.Scene, zone: ZoneId, width: number, 
         if (tile === 3) graphics.fillStyle(zone === 'village' ? 0xf0cd91 : 0x9ac4a3).fillRect(x + 15, 15, 2, 2)
       }
     }
-    graphics.generateTexture(key, 128, 32)
+    graphics.fillStyle(shadow).fillRect(128, 0, 32, 32)
+    graphics.fillStyle(light, 0.8).fillRect(130, 2, 28, 4)
+    graphics.lineStyle(2, ground).strokeRect(130, 7, 28, 23)
+    graphics.lineStyle(1, shadow).lineBetween(144, 8, 144, 29)
+    graphics.generateTexture(key, 160, 32)
     graphics.destroy()
   }
 
@@ -44,5 +57,9 @@ export function createTerrain(scene: Phaser.Scene, zone: ZoneId, width: number, 
   const layer = map.createLayer(0, tiles, 0, 0)
   if (!layer) throw new Error(`Could not create terrain layer for ${zone}`)
   layer.setDepth(-999)
-  return map
+  const blocking = map.createBlankLayer('blocking', tiles)
+  if (!blocking) throw new Error(`Could not create blocking layer for ${zone}`)
+  for (const [x, y] of getBlockingTiles(zone)) blocking.putTileAt(4, x, y)
+  blocking.setCollision(4).setDepth(0)
+  return { map, blocking }
 }

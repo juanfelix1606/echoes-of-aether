@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { SaveSystem } from '../systems/SaveSystem'
+import { gameAudio } from '../systems/gameAudio'
 
 export class MainMenuScene extends Phaser.Scene {
   constructor() {
@@ -43,16 +44,16 @@ export class MainMenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
-    this.createButton(centerX, centerY - 55, 'NEW GAME', () =>
-      this.scene.start('GameScene', { save: SaveSystem.fresh() }),
-    )
-    this.createButton(centerX, centerY + 3, 'CONTINUE', () => {
+    const newGame = () => this.scene.start('GameScene', { save: SaveSystem.fresh() })
+    const continueGame = () => {
       const save = SaveSystem.load()
       if (save) this.scene.start('GameScene', { save })
       else this.showNotice('No valid save found. Start a new game.')
-    }, !hasSave)
-    this.createButton(centerX, centerY + 61, 'SETTINGS: AUDIO', () => this.toggleAudioSetting())
-    this.createButton(centerX, centerY + 119, 'CREDITS', () => this.showCredits())
+    }
+    this.createButton(centerX, centerY - 55, '1  NEW GAME', newGame)
+    this.createButton(centerX, centerY + 3, '2  CONTINUE', continueGame, !hasSave)
+    this.createButton(centerX, centerY + 61, '3  SETTINGS: AUDIO', () => this.toggleAudioSetting())
+    this.createButton(centerX, centerY + 119, '4  CREDITS', () => this.showCredits())
 
     this.add
       .text(centerX, centerY + 181, 'WASD / ARROWS: MOVE     SPACE: ATTACK     E: INTERACT', {
@@ -62,9 +63,15 @@ export class MainMenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
-    this.input.keyboard?.on('keydown-ENTER', () =>
-      this.scene.start('GameScene', { save: SaveSystem.fresh() }),
-    )
+    const onKey = (event: KeyboardEvent) => {
+      if (event.repeat) return
+      if (event.key === 'Enter' || event.key === '1') newGame()
+      else if (event.key === '2') continueGame()
+      else if (event.key === '3') this.toggleAudioSetting()
+      else if (event.key === '4') this.showCredits()
+    }
+    this.input.keyboard?.on('keydown', onKey)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.input.keyboard?.off('keydown', onKey))
   }
 
   private createButton(x: number, y: number, label: string, action: () => void, disabled = false): void {
@@ -89,6 +96,8 @@ export class MainMenuScene extends Phaser.Scene {
   private toggleAudioSetting(): void {
     const saved = SaveSystem.load()
     const muted = !(saved?.muted ?? SaveSystem.fresh().muted)
+    gameAudio.setMuted(muted)
+    if (!muted) gameAudio.playTone(523.25, 0.15, 'triangle', 0.08)
     const settingsSaved = SaveSystem.setMuted(muted)
     const progressSaved = saved ? SaveSystem.save({ ...saved, muted }) : true
     this.showNotice(settingsSaved && progressSaved ? `Audio ${muted ? 'muted' : 'enabled'}.` : 'Unable to save audio settings.')

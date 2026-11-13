@@ -3,7 +3,16 @@ import { App } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { gameConfig } from './config/gameConfig'
 import { GameScene } from './scenes/GameScene'
+import { gameAudio } from './systems/gameAudio'
 import './style.css'
+
+const unlockAudio = (): void => {
+  gameAudio.unlock()
+  document.removeEventListener('pointerdown', unlockAudio, true)
+  document.removeEventListener('keydown', unlockAudio, true)
+}
+document.addEventListener('pointerdown', unlockAudio, true)
+document.addEventListener('keydown', unlockAudio, true)
 
 export const game = new Phaser.Game(gameConfig)
 

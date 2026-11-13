@@ -8,7 +8,7 @@ import {
   type SaveData,
   type ZoneId,
 } from '../data/gameData'
-import { AudioSystem } from '../systems/AudioSystem'
+import { gameAudio } from '../systems/gameAudio'
 import { rollDrops, type Drop } from '../systems/DropSystem'
 import { InventorySystem } from '../systems/InventorySystem'
 import { ProgressionSystem } from '../systems/ProgressionSystem'
@@ -44,16 +44,19 @@ export class GameScene extends Phaser.Scene {
   private saveData!: SaveData
   private inventory!: InventorySystem
   private quest!: QuestSystem
-  private audio!: AudioSystem
+  private readonly audio = gameAudio
   private player!: Phaser.Physics.Arcade.Sprite
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
   private movementKeys!: MovementKeys
   private actionKeys!: Record<'attack' | 'interact' | 'inventory' | 'potion' | 'skill' | 'save', Phaser.Input.Keyboard.Key>
   private facing = new Phaser.Math.Vector2(0, 1)
+  private heroDirection: 'down' | 'up' | 'side' = 'down'
   private enemies: Phaser.Physics.Arcade.Sprite[] = []
   private zoneObjects: Phaser.GameObjects.GameObject[] = []
   private obstacles!: Phaser.Physics.Arcade.StaticGroup
   private obstacleCollider?: Phaser.Physics.Arcade.Collider
+  private terrainCollider?: Phaser.Physics.Arcade.Collider
+  private blockingLayer?: Phaser.Tilemaps.TilemapLayer
   private enemyColliders: Phaser.Physics.Arcade.Collider[] = []
   private terrainMap?: Phaser.Tilemaps.Tilemap
   private hud!: Phaser.GameObjects.Container
@@ -85,6 +88,7 @@ export class GameScene extends Phaser.Scene {
   private dialogLines: string[] = []
   private dialogIndex = 0
   private dialogueComplete?: () => void
+  private panelActions: Array<(() => void) | undefined> = []
   private paused = false
   private nextAutosave = 0
   private worldWidth = 1200
@@ -106,6 +110,7 @@ export class GameScene extends Phaser.Scene {
     this.paused = false
     this.dialoguePanel = undefined
     this.dialogueComplete = undefined
+    this.panelActions = []
     this.inventoryPanel = undefined
     this.pausedPanel = undefined
     this.endPanel = undefined
@@ -119,17 +124,19 @@ export class GameScene extends Phaser.Scene {
     this.touchInteract = false
     this.touchPotion = false
     this.touchSkill = false
+    this.facing.set(0, 1)
+    this.heroDirection = 'down'
     this.saveData = data.save ?? SaveSystem.fresh()
     this.inventory = new InventorySystem(this.saveData)
     this.quest = new QuestSystem(this.saveData.quest)
-    this.audio = new AudioSystem(this.saveData.muted)
+    this.audio.setMuted(this.saveData.muted)
   }
 
   create(): void {
     generateTextures(this)
     this.physics.world.setBounds(32, 32, this.worldWidth - 64, this.worldHeight - 64)
     this.obstacles = this.physics.add.staticGroup()
-    this.player = this.physics.add.sprite(this.saveData.x, this.saveData.y, 'hero')
+    this.player = this.physics.add.sprite(this.saveData.x, this.saveData.y, 'hero-down-idle')
     this.player.setCollideWorldBounds(true).setDepth(this.player.y)
     this.cameras.main.setBounds(0, 0, this.worldWidth, this.worldHeight)
     this.cameras.main.startFollow(this.player, true, 0.09, 0.09)
@@ -157,9 +164,11 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointermove', this.onPointerMove, this)
     this.input.on('pointerup', this.onPointerUp, this)
     this.input.on('pointerupoutside', this.onPointerUp, this)
-    this.input.keyboard?.on('keydown-ESC', this.togglePause, this)
+    window.addEventListener('keydown', this.onEscape, true)
     this.input.keyboard?.on('keydown-ENTER', this.advanceDialogue, this)
     this.input.keyboard?.on('keydown-I', this.toggleInventory, this)
+    this.input.keyboard?.on('keydown-J', this.openJournal, this)
+    this.input.keyboard?.on('keydown', this.onPanelKey, this)
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this)
     this.nextAutosave = this.time.now + 15000
     this.refreshHud()
@@ -191,11 +200,12 @@ export class GameScene extends Phaser.Scene {
     if (movement.lengthSq() > 0) {
       this.facing.copy(movement).normalize()
       this.player.setVelocity(movement.x * 175, movement.y * 175)
-      this.player.setFlipX(movement.x < 0)
-      this.player.setAngle(Math.sin(time / 95) * 3)
+      this.heroDirection = Math.abs(movement.x) > Math.abs(movement.y) ? 'side' : movement.y < 0 ? 'up' : 'down'
+      this.player.setFlipX(this.heroDirection === 'side' && movement.x < 0)
+      this.player.setTexture(`hero-${this.heroDirection}-walk-${Math.floor(time / 150) % 2}`)
     } else {
       this.player.setVelocity(0, 0)
-      this.player.setAngle(0)
+      this.player.setTexture(`hero-${this.heroDirection}-idle`)
     }
     this.player.setDepth(this.player.y)
     this.updateEnemies(time, delta)
@@ -254,9 +264,7 @@ export class GameScene extends Phaser.Scene {
     const journal = this.add.text(650, 18, 'QUEST', {
       color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 12, y: 10 },
     }).setScrollFactor(0).setInteractive({ useHandCursor: true })
-    this.onUiPointerDown(journal, () => {
-      if (!this.paused && !this.dialoguePanel) this.showDialogue([this.quest.getObjective()], 'The Shattered Crystal')
-    })
+    this.onUiPointerDown(journal, () => this.openJournal())
     const inventory = this.add.text(750, 18, 'BAG', {
       color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 14, y: 10 },
     }).setScrollFactor(0).setInteractive({ useHandCursor: true })
@@ -302,6 +310,10 @@ export class GameScene extends Phaser.Scene {
       this.physics.world.removeCollider(this.obstacleCollider)
       this.obstacleCollider = undefined
     }
+    if (this.terrainCollider) {
+      this.physics.world.removeCollider(this.terrainCollider)
+      this.terrainCollider = undefined
+    }
     this.enemyColliders.forEach((collider) => this.physics.world.removeCollider(collider))
     this.enemyColliders = []
     this.zoneObjects.forEach((object) => object.destroy())
@@ -315,10 +327,13 @@ export class GameScene extends Phaser.Scene {
     this.saveData.x = this.player.x
     this.saveData.y = this.player.y
 
-    this.terrainMap = createTerrain(this, zone, this.worldWidth, this.worldHeight)
+    const terrain = createTerrain(this, zone, this.worldWidth, this.worldHeight)
+    this.terrainMap = terrain.map
+    this.blockingLayer = terrain.blocking
     this.player.setVelocity(0, 0)
     this.player.setDepth(this.player.y)
     this.obstacleCollider = this.physics.add.collider(this.player, this.obstacles)
+    this.terrainCollider = this.physics.add.collider(this.player, terrain.blocking)
 
     if (zone === 'village') this.buildVillage()
     if (zone === 'forest') this.buildForest()
@@ -371,6 +386,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createBuilding(x: number, y: number, title: string): void {
+    this.createBlocker(x, y + 20, 170, 70)
     const body = this.track(this.add.rectangle(x, y, 170, 110, 0x584638).setStrokeStyle(4, 0xb9965a))
     this.track(this.add.triangle(x, y - 70, -100, 60, 0, -20, 100, 60, 0x793f38).setStrokeStyle(4, 0xb9965a))
     body.setDepth(y)
@@ -434,6 +450,11 @@ export class GameScene extends Phaser.Scene {
 
   private createPillar(x: number, y: number): void {
     this.track(this.add.rectangle(x, y, 64, 86, 0x272934).setStrokeStyle(5, 0x656574).setDepth(y))
+    this.createBlocker(x, y + 20, 64, 46)
+  }
+
+  private createBlocker(x: number, y: number, width: number, height: number): void {
+    this.obstacles.create(x, y, 'spark').setDisplaySize(width, height).setVisible(false).refreshBody()
   }
 
   private createEnemy(kind: string, x: number, y: number): void {
@@ -453,6 +474,7 @@ export class GameScene extends Phaser.Scene {
     enemy.setData('healthBar', this.track(this.add.graphics().setDepth(y + 1)))
     this.enemies.push(enemy)
     this.enemyColliders.push(this.physics.add.collider(enemy, this.obstacles))
+    if (this.blockingLayer) this.enemyColliders.push(this.physics.add.collider(enemy, this.blockingLayer))
   }
 
   private createShard(x: number, y: number): void {
@@ -783,6 +805,7 @@ export class GameScene extends Phaser.Scene {
     this.dialogLines = lines
     this.dialogIndex = 0
     this.dialogueComplete = onComplete
+    this.announce(`${title}. ${lines[0]}`)
     const panel = this.add.container(480, 420).setScrollFactor(0).setDepth(2300)
     this.dialoguePanel = panel
     panel.add(this.add.rectangle(0, 0, 780, choices ? 206 : 142, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
@@ -796,16 +819,18 @@ export class GameScene extends Phaser.Scene {
     panel.add(this.dialogText)
     if (choices) {
       choices.forEach(([label, action], index) => {
-        const button = this.add.text(-355 + (index % 2) * 355, 14 + Math.floor(index / 2) * 40, label, {
+        const choose = () => {
+          action()
+          this.closeDialogue()
+        }
+        this.panelActions[index] = choose
+        const button = this.add.text(-355 + (index % 2) * 355, 14 + Math.floor(index / 2) * 40, `${index + 1}. ${label}`, {
           color: '#fff1c8',
           backgroundColor: '#705331',
           fontSize: '13px',
           padding: { x: 8, y: 6 },
         }).setScrollFactor(0).setInteractive({ useHandCursor: true })
-        this.onUiPointerDown(button, () => {
-          action()
-          this.closeDialogue()
-        })
+        this.onUiPointerDown(button, choose)
         panel.add(button)
       })
     } else {
@@ -835,6 +860,7 @@ export class GameScene extends Phaser.Scene {
       return
     }
     this.dialogText?.setText(this.dialogLines[this.dialogIndex])
+    this.announce(this.dialogLines[this.dialogIndex])
   }
 
   private closeDialogue(): void {
@@ -842,6 +868,7 @@ export class GameScene extends Phaser.Scene {
     this.dialoguePanel = undefined
     this.dialogText = undefined
     this.dialogueComplete = undefined
+    this.panelActions = []
     if (!this.paused) this.physics.world.resume()
   }
 
@@ -850,6 +877,7 @@ export class GameScene extends Phaser.Scene {
     if (this.inventoryPanel) {
       this.inventoryPanel.destroy()
       this.inventoryPanel = undefined
+      this.panelActions = []
       this.paused = false
       this.physics.world.resume()
       return
@@ -866,31 +894,34 @@ export class GameScene extends Phaser.Scene {
     const equipped = (['weapon', 'armor'] as const)
     equipped.forEach((slot, index) => {
       const id = this.saveData.equipment[slot]
-      const label = this.add.text(-315 + index * 320, 112, `${slot.toUpperCase()}: ${id ? ITEMS[id].name : 'None'}`, {
+      const label = this.add.text(-315 + index * 320, 112, `${index + 6}. ${slot.toUpperCase()}: ${id ? ITEMS[id].name : 'None'}`, {
         color: '#f3d894', backgroundColor: '#293b31', fontSize: '14px', padding: { x: 8, y: 8 },
       }).setScrollFactor(0).setInteractive({ useHandCursor: true })
-      this.onUiPointerDown(label, () => {
+      const unequip = () => {
         if (id && this.inventory.unequip(slot)) {
           this.showToast(`${ITEMS[id].name} unequipped.`)
           this.refreshHud()
+          this.saveGame(false)
           this.toggleInventory()
           this.toggleInventory()
         }
-      })
+      }
+      this.panelActions[index + 5] = unequip
+      this.onUiPointerDown(label, unequip)
       panel.add(label)
     })
     const slots = Object.entries(this.saveData.inventory) as Array<[ItemId, number]>
     if (!slots.length) panel.add(this.add.text(-315, -100, 'Your pack is empty.', { color: '#c4cec4', fontSize: '16px' }))
     slots.forEach(([id, count], index) => {
       const item = ITEMS[id]
-      const row = this.add.text(-315, -112 + index * 44, `${item.name}  x${count}    — ${item.description}`, {
+      const row = this.add.text(-315, -112 + index * 44, `${index + 1}. ${item.name}  x${count}    — ${item.description}`, {
         color: '#e9e3d3',
         backgroundColor: index % 2 ? '#202e27' : '#293b31',
         fontSize: '14px',
         padding: { x: 8, y: 6 },
         fixedWidth: 620,
       }).setScrollFactor(0).setInteractive({ useHandCursor: true })
-      this.onUiPointerDown(row, () => {
+      const useItem = () => {
         if (item.category === 'weapon' || item.category === 'armor') {
           this.inventory.equip(id)
           this.showToast(`${item.name} equipped.`)
@@ -899,11 +930,15 @@ export class GameScene extends Phaser.Scene {
           else this.showToast('That item cannot be used right now.')
         }
         this.refreshHud()
+        this.saveGame(false)
         this.inventoryPanel?.destroy()
         this.inventoryPanel = undefined
+        this.panelActions = []
         this.paused = false
         this.physics.world.resume()
-      })
+      }
+      this.panelActions[index] = useItem
+      this.onUiPointerDown(row, useItem)
       panel.add(row)
     })
     const close = this.add.text(246, 172, 'CLOSE  [I]', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '15px', padding: { x: 12, y: 7 } }).setScrollFactor(0).setInteractive({ useHandCursor: true })
@@ -929,19 +964,22 @@ export class GameScene extends Phaser.Scene {
       this.pausedPanel = panel
       panel.add(this.add.rectangle(0, 0, 360, 190, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
       panel.add(this.add.text(0, -54, 'PAUSED', { color: '#f3d894', fontSize: '26px', fontStyle: 'bold' }).setOrigin(0.5))
-      const resume = this.add.text(0, 4, 'RESUME', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '17px', padding: { x: 18, y: 9 } }).setOrigin(0.5).setScrollFactor(0).setInteractive()
+      const resume = this.add.text(0, 4, '1. RESUME', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '17px', padding: { x: 18, y: 9 } }).setOrigin(0.5).setScrollFactor(0).setInteractive()
       this.onUiPointerDown(resume, () => this.togglePause())
-      const audio = this.add.text(0, 58, `AUDIO: ${this.audio.isMuted() ? 'OFF' : 'ON'}`, { color: '#ddd6c5', fontSize: '15px' }).setOrigin(0.5).setScrollFactor(0).setInteractive()
-      this.onUiPointerDown(audio, () => {
+      const audio = this.add.text(0, 58, `2. AUDIO: ${this.audio.isMuted() ? 'OFF' : 'ON'}`, { color: '#ddd6c5', fontSize: '15px' }).setOrigin(0.5).setScrollFactor(0).setInteractive()
+      const toggleAudio = () => {
         this.saveData.muted = this.audio.toggleMute()
-        audio.setText(`AUDIO: ${this.audio.isMuted() ? 'OFF' : 'ON'}`)
+        audio.setText(`2. AUDIO: ${this.audio.isMuted() ? 'OFF' : 'ON'}`)
         if (!SaveSystem.setMuted(this.saveData.muted)) this.showToast('Unable to save audio settings.')
         this.saveGame(false)
-      })
+      }
+      this.panelActions = [() => this.togglePause(), toggleAudio]
+      this.onUiPointerDown(audio, toggleAudio)
       panel.add([resume, audio])
     } else {
       this.pausedPanel?.destroy()
       this.pausedPanel = undefined
+      this.panelActions = []
       this.physics.world.resume()
     }
   }
@@ -953,14 +991,16 @@ export class GameScene extends Phaser.Scene {
     this.endPanel = panel
     panel.add(this.add.rectangle(0, 0, 400, 220, 0x111b17, 0.97).setStrokeStyle(3, 0xb9965a))
     panel.add(this.add.text(0, -65, 'YOU HAVE FALLEN', { color: '#e99b83', fontSize: '24px', fontStyle: 'bold' }).setOrigin(0.5))
-    const revive = this.add.text(0, 6, 'RISE AGAIN', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '17px', padding: { x: 18, y: 9 } }).setOrigin(0.5).setScrollFactor(0).setInteractive()
-    this.onUiPointerDown(revive, () => {
+    const revive = this.add.text(0, 6, '1. RISE AGAIN', { color: '#fff1c8', backgroundColor: '#705331', fontSize: '17px', padding: { x: 18, y: 9 } }).setOrigin(0.5).setScrollFactor(0).setInteractive()
+    const riseAgain = () => {
       this.saveData.player.health = Math.ceil(this.saveData.player.maxHealth / 2)
       this.saveData.zone = 'village'
       this.saveData.x = 470
       this.saveData.y = 360
       this.scene.restart({ save: this.saveData })
-    })
+    }
+    this.panelActions = [riseAgain]
+    this.onUiPointerDown(revive, riseAgain)
     panel.add(revive)
     panel.add(this.add.text(0, 70, 'Your progress is safe. Return to the village.', { color: '#ddd6c5', fontSize: '14px' }).setOrigin(0.5))
   }
@@ -977,15 +1017,18 @@ export class GameScene extends Phaser.Scene {
     panel.add(this.add.text(0, -35, 'The first echo is restored. Aetheria has hope again.', {
       color: '#e5e9d8', fontSize: '16px',
     }).setOrigin(0.5))
-    const resume = this.add.text(0, 48, 'CONTINUE EXPLORING', {
+    const resume = this.add.text(0, 48, '1. CONTINUE EXPLORING', {
       color: '#fff1c8', backgroundColor: '#705331', fontSize: '16px', padding: { x: 18, y: 10 },
     }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true })
-    this.onUiPointerDown(resume, () => {
+    const continueExploring = () => {
       panel.destroy()
       this.endPanel = undefined
+      this.panelActions = []
       this.paused = false
       this.physics.world.resume()
-    })
+    }
+    this.panelActions = [continueExploring]
+    this.onUiPointerDown(resume, continueExploring)
     panel.add(resume)
   }
 
@@ -1034,6 +1077,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private showToast(message: string): void {
+    this.announce(message)
     this.toastText.setText(message).setVisible(true)
     this.toastUntil = this.time.now + 2200
   }
@@ -1048,11 +1092,32 @@ export class GameScene extends Phaser.Scene {
       if (action === 'skill') this.touchSkill = true
       return
     }
+
     if (pointer.x < 190 && pointer.y > 320 && this.joystickPointer < 0) {
       this.joystickPointer = pointer.id
       this.joystickOrigin.set(pointer.x, pointer.y)
       this.updateJoystick(pointer)
     }
+  }
+
+  private openJournal(): void {
+    if (!this.paused && !this.dialoguePanel) this.showDialogue([this.quest.getObjective()], 'The Shattered Crystal')
+  }
+
+  private readonly onEscape = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.repeat) return
+    event.preventDefault()
+    this.togglePause()
+  }
+
+  private onPanelKey(event: KeyboardEvent): void {
+    if (event.repeat || !/^[1-9]$/.test(event.key)) return
+    this.panelActions[Number(event.key) - 1]?.()
+  }
+
+  private announce(message: string): void {
+    const status = document.getElementById('game-status')
+    if (status) status.textContent = message
   }
 
   private onUiPointerDown(object: Phaser.GameObjects.GameObject, action: () => void): void {
@@ -1099,12 +1164,15 @@ export class GameScene extends Phaser.Scene {
     this.input.off('pointermove', this.onPointerMove, this)
     this.input.off('pointerup', this.onPointerUp, this)
     this.input.off('pointerupoutside', this.onPointerUp, this)
-    this.input.keyboard?.off('keydown-ESC', this.togglePause, this)
+    window.removeEventListener('keydown', this.onEscape, true)
     this.input.keyboard?.off('keydown-ENTER', this.advanceDialogue, this)
     this.input.keyboard?.off('keydown-I', this.toggleInventory, this)
-    this.audio.dispose()
+    this.input.keyboard?.off('keydown-J', this.openJournal, this)
+    this.input.keyboard?.off('keydown', this.onPanelKey, this)
+    this.audio.stopMusic()
     this.terrainMap?.destroy()
     this.terrainMap = undefined
+    this.blockingLayer = undefined
   }
 
   private track<T extends Phaser.GameObjects.GameObject>(object: T): T {

@@ -9,7 +9,9 @@
   </head>
   <body>
     <main id="app">
-      <div id="game" aria-label="Echoes of Aether game"></div>
+      <div id="game" aria-label="Echoes of Aether game" aria-describedby="game-help"></div>
+      <p id="game-help" class="sr-only">Use WASD or arrow keys to move, space to attack, Q for skill, E or Enter to interact, I for inventory, J for quest, P for potions, and Escape to pause. In menus, press the number shown beside an option.</p>
+      <div id="game-status" class="sr-only" role="status" aria-live="polite"></div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

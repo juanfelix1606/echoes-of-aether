@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+def releaseSigning = [
+    storeFile: System.getenv('AETHER_KEYSTORE'),
+    storePassword: System.getenv('AETHER_KEYSTORE_PASSWORD'),
+    keyAlias: System.getenv('AETHER_KEY_ALIAS'),
+    keyPassword: System.getenv('AETHER_KEY_PASSWORD')
+]
+def hasReleaseSigning = releaseSigning.values().every { it }
+if (releaseSigning.values().any { it } && !hasReleaseSigning) {
+    throw new GradleException('Set all four AETHER_KEYSTORE, AETHER_KEYSTORE_PASSWORD, AETHER_KEY_ALIAS, and AETHER_KEY_PASSWORD variables for release signing.')
+}
+
 android {
     namespace = "com.echoesofaether.game"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,9 +27,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
+            if (hasReleaseSigning) signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }

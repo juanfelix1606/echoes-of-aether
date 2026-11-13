@@ -13,11 +13,28 @@ export class AudioSystem {
 
   toggleMute(): boolean {
     this.muted = !this.muted
+    if (!this.muted) this.playTone(523.25, 0.15, 'triangle', 0.08)
     return this.muted
   }
 
+  setMuted(muted: boolean): void {
+    this.muted = muted
+  }
+
+  unlock(): void {
+    try {
+      this.context ??= new AudioContext()
+      if (this.context.state === 'suspended') {
+        void this.context.resume().catch((error: unknown) => console.warn('Unable to resume game audio.', error))
+      }
+      this.playTone(523.25, 0.15, 'triangle', 0.08)
+    } catch (error) {
+      console.warn('Game audio could not be unlocked.', error)
+    }
+  }
+
   setZone(zone: ZoneId | 'boss'): void {
-    if (this.musicTimer !== undefined) window.clearInterval(this.musicTimer)
+    this.stopMusic()
     const melody: Record<ZoneId | 'boss', number[]> = {
       village: [392, 440, 523.25, 493.88, 392, 329.63, 349.23, 392, 440, 392, 349.23, 329.63, 293.66, 329.63, 349.23, 392],
       forest: [293.66, 349.23, 392, 349.23, 293.66, 261.63, 233.08, 261.63, 293.66, 349.23, 440, 392, 349.23, 293.66, 261.63, 233.08],
@@ -33,15 +50,19 @@ export class AudioSystem {
     this.musicStep = 0
     this.musicTimer = window.setInterval(() => {
       const note = melody[zone][this.musicStep % melody[zone].length]
-      if (this.musicStep % 4 === 0) this.playTone(bass[zone][Math.floor(this.musicStep / 4) % 4], 0.9, 'triangle', 0.025)
-      this.playTone(note, zone === 'boss' ? 0.17 : 0.34, zone === 'boss' ? 'triangle' : 'sine', 0.025)
+      if (this.musicStep % 4 === 0) this.playTone(bass[zone][Math.floor(this.musicStep / 4) % 4], 0.9, 'triangle', 0.04)
+      this.playTone(note, zone === 'boss' ? 0.17 : 0.34, zone === 'boss' ? 'triangle' : 'sine', 0.045)
       this.musicStep += 1
     }, zone === 'boss' ? 290 : 480)
   }
 
-  dispose(): void {
+  stopMusic(): void {
     if (this.musicTimer !== undefined) window.clearInterval(this.musicTimer)
     this.musicTimer = undefined
+  }
+
+  dispose(): void {
+    this.stopMusic()
     if (this.context) {
       void this.context.close().catch((error: unknown) => console.warn('Unable to close game audio.', error))
       this.context = undefined
